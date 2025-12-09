@@ -61,8 +61,15 @@ class CanvasManager:
     def overlay_on_frame(self, frame_bgr):
         """
         Alpha-blend the drawing canvas on top of the original camera frame.
+        如果 canvas 大小跟 frame 不同，就先 resize 一下避免 OpenCV error。
         """
-        # You can adjust alpha for stronger / lighter drawing effect
-        alpha = 0.7
+        fh, fw, _ = frame_bgr.shape
+        ch, cw, _ = self.canvas.shape
+
+        if (fh, fw) != (ch, cw):
+            # 這種情況通常是相機解析度被調整，或初始化假設跟真實不同
+            self.canvas = cv2.resize(self.canvas, (fw, fh))
+
+        alpha = 0.3
         cv2.addWeighted(self.canvas, alpha, frame_bgr, 1 - alpha, 0, frame_bgr)
         return frame_bgr

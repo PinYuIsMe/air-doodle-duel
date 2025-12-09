@@ -7,21 +7,27 @@ import mediapipe as mp
 
 @dataclass
 class HandLandmark:
-    """
-    Normalized landmark (x, y) in [0, 1].
-    """
     x: float
     y: float
 
 
+@dataclass
+class TrackedHand:
+    """
+    A single tracked hand with landmarks and handedness label.
+    """
+    landmarks: List[HandLandmark]
+    handedness: str  # "Left" or "Right"
+
+
 class HandTracker:
     """
-    Wraps MediaPipe Hands for single-hand tracking.
+    Wraps MediaPipe Hands for up to 2 hands.
     """
 
     def __init__(
         self,
-        max_num_hands: int = 1,
+        max_num_hands: int = 2,
         detection_confidence: float = 0.6,
         tracking_confidence: float = 0.5,
     ):
@@ -35,79 +41,71 @@ class HandTracker:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_style = mp.solutions.drawing_styles
 
-    def process(self, frame_bgr) -> Optional[List[HandLandmark]]:
+    def process_multi(self, frame_bgr) -> List[TrackedHand]:
         """
-        Process a BGR frame and return normalized landmarks of the first hand.
-
-        Returns:
-            List[HandLandmark] or None
+        Process a BGR frame and return list of tracked hands.
         """
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         result = self.hands.process(frame_rgb)
 
+        tracked_hands: List[TrackedHand] = []
         if not result.multi_hand_landmarks:
-            return None
+            return tracked_hands
 
-        hand_landmarks = result.multi_hand_landmarks[0]  # first hand
-        landmarks = [HandLandmark(lm.x, lm.y)
-                     for lm in hand_landmarks.landmark]
-        return landmarks
+        handedness_list = result.multi_handedness or []
+        for hand_landmarks, handedness in zip(
+            result.multi_hand_landmarks, handedness_list
+        ):
+            landmarks = [HandLandmark(lm.x, lm.y)
+                         for lm in hand_landmarks.landmark]
+            label = handedness.classification[0].label  # "Left" or "Right"
+            tracked_hands.append(TrackedHand(
+                landmarks=landmarks, handedness=label))
+
+        return tracked_hands
 
     def get_index_finger_tip(
         self,
         landmarks: List[HandLandmark],
         frame_shape: Tuple[int, int, int],
     ) -> Tuple[int, int]:
-        """
-        Convert normalized index finger tip coordinate to pixel coordinate.
-        """
         h, w, _ = frame_shape
-        index_tip = landmarks[8]  # index finger tip in MediaPipe Hands
+        index_tip = landmarks[8]
         x_px = int(index_tip.x * w)
         y_px = int(index_tip.y * h)
         return x_px, y_px
 
     def classify_gesture(self, landmarks: List[HandLandmark]) -> str:
         """
-        Very simple gesture classifier:
-        - "point": fingers extended -> draw
-        - "fist": fingers folded -> stop drawing
-
-        NOTE: This is a heuristic. You will likely tune thresholds based on your testing.
+        - 食指尖 (8) + 中指尖 (12) 接近 => 畫線
+        - 兩指分開 => 停止畫線
         """
-        # Use distances between finger tips and wrist in normalized coordinates.
-        wrist = landmarks[0]
-        finger_tip_indices = [4, 8, 12, 16, 20]
-
         def dist(a: HandLandmark, b: HandLandmark) -> float:
             dx = a.x - b.x
             dy = a.y - b.y
-            return (dx * dx + dy * dy) ** 0.5
+            return (dx*dx + dy*dy)**0.5
 
-        dists = [dist(landmarks[i], wrist) for i in finger_tip_indices]
-        avg_dist = sum(dists) / len(dists)
+        index_tip = landmarks[8]   # 食指尖
+        middle_tip = landmarks[12]  # 中指尖
 
-        # Heuristic thresholds; feel free to adjust after trying:
-        # - small distance => fist
-        # - larger distance => pointing / open hand (we'll treat as "draw")
-        if avg_dist < 0.08:
-            return "fist"
+        d = dist(index_tip, middle_tip)
+
+        # 這個 threshold 你可以按需要調整（一般 0.03～0.05 效果最好）
+        if d < 0.08:
+            return "point"   # 畫線
         else:
-            return "point"
+            return "stop"    # 停止畫線
 
     def draw_hand_overlay(self, frame_bgr, landmarks: List[HandLandmark]):
         """
-        Optional: draw hand landmarks on the frame for debugging.
+        Draw hand landmarks on frame for debugging.
         """
-        h, w, _ = frame_bgr.shape
-        # Reconstruct MediaPipe landmark object to reuse drawing utilities
-        hand_landmarks = self.mp_hands.HandLandmark
-        # Build dummy object
         from mediapipe.framework.formats import landmark_pb2
 
         landmark_list = landmark_pb2.NormalizedLandmarkList(
             landmark=[
-                landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=0.0) for lm in landmarks
+                landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=0.0)
+                for lm in landmarks
             ]
         )
 
